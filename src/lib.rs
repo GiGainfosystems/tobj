@@ -276,6 +276,7 @@ pub const GPU_LOAD_OPTIONS: LoadOptions = LoadOptions {
     triangulate: true,
     ignore_points: true,
     ignore_lines: true,
+    unnamed_model_fallback: None,
 };
 
 /// Typical [`LoadOptions`] for using meshes with an offline rendeder.
@@ -293,6 +294,7 @@ pub const OFFLINE_RENDERING_LOAD_OPTIONS: LoadOptions = LoadOptions {
     triangulate: false,
     ignore_points: true,
     ignore_lines: true,
+    unnamed_model_fallback: None,
 };
 
 /// A mesh made up of triangles loaded from some `OBJ` file.
@@ -427,7 +429,7 @@ pub struct Mesh {
 /// * [`OFFLINE_RENDERING_LOAD_OPTIONS`] – if you're rendering meshes with e.g.
 ///   an offline path tracer or the like.
 #[cfg_attr(feature = "arbitrary", derive(arbitrary::Arbitrary))]
-#[derive(Debug, Default, Clone, Copy)]
+#[derive(Debug, Default, Clone)]
 pub struct LoadOptions {
     /// Merge identical positions.
     ///
@@ -529,6 +531,11 @@ pub struct LoadOptions {
     /// Polygon meshes that contains faces with two vertices only usually do so
     /// because of bad topology.
     pub ignore_lines: bool,
+    /// When parsing models, if no name should be provided by an "o" or "g"
+    /// line, this name will be used instead of "unnamed_object".
+    /// Additionally, the unnamed parts will be enumerated like
+    /// "fallback_name_12", starting with 0.
+    pub unnamed_model_fallback: Option<String>,
 }
 
 impl LoadOptions {
@@ -1554,9 +1561,10 @@ struct TmpModels {
     normal: Vec<Float>,
     faces: Vec<Face>,
     // name of the current object being parsed
-    name: String,
+    name: Option<String>,
     // material used by the current object being parsed
     mat_id: Option<usize>,
+    unnamed_model_count: usize,
 }
 
 impl Default for TmpModels {
@@ -1569,8 +1577,9 @@ impl Default for TmpModels {
             texcoord: Vec::new(),
             normal: Vec::new(),
             faces: Vec::new(),
-            name: "unnamed_object".to_owned(),
+            name: None,
             mat_id: None,
+            unnamed_model_count: 0,
         }
     }
 }
@@ -1583,6 +1592,7 @@ impl TmpModels {
 
     #[inline]
     fn pop_model(&mut self, load_options: &LoadOptions) -> Result<(), LoadError> {
+        let model_name = self.get_current_model_name(load_options);
         self.models.push(Model::new(
             if load_options.single_index {
                 export_faces(
@@ -1605,7 +1615,7 @@ impl TmpModels {
                     load_options,
                 )?
             },
-            self.name.clone(),
+            model_name,
         ));
         self.faces.clear();
         Ok(())
@@ -1614,6 +1624,22 @@ impl TmpModels {
     #[inline]
     fn into_models(self) -> Vec<Model> {
         self.models
+    }
+
+    fn get_current_model_name(&mut self, load_options: &LoadOptions) -> String {
+        let model_name = if let Some(name) = &self.name {
+            name.clone()
+        } else {
+            let name = if let Some(ref file_name) = load_options.unnamed_model_fallback {
+                format!("{}_{}", file_name, self.unnamed_model_count)
+            } else {
+                format!("unnamed_object_{}", self.unnamed_model_count)
+            };
+            self.unnamed_model_count += 1;
+            name
+        };
+
+        model_name
     }
 }
 
@@ -1790,9 +1816,11 @@ fn parse_obj_line(
                 models.pop_model(load_options)?;
             }
             let size = line.chars().next().unwrap().len_utf8();
-            models.name = line[size..].trim().to_owned();
-            if models.name.is_empty() {
-                models.name = "unnamed_object".to_owned();
+            let tmp_name = line[size..].trim().to_owned();
+            if tmp_name.is_empty() {
+                models.name = None;
+            } else {
+                models.name = Some(tmp_name);
             }
             Ok(ParseReturnType::None)
         }
@@ -1816,7 +1844,7 @@ fn parse_obj_line(
                     #[cfg(feature = "log")]
                     log::warn!(
                         "Object {} refers to unfound material: {}",
-                        models.name,
+                        models.get_current_model_name(load_options),
                         mat_name
                     );
                 }
