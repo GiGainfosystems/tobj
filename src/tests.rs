@@ -206,7 +206,7 @@ fn empty_name_triangle() {
     assert_eq!(models.len(), 1);
     assert!(mats.is_empty());
     // Confirm our triangle is loaded correctly
-    assert_eq!(models[0].name, "unnamed_object");
+    assert_eq!(models[0].name, "unnamed_object_0");
     let mesh = &models[0].mesh;
     assert!(mesh.normals.is_empty());
     assert!(mesh.texcoords.is_empty());
@@ -218,6 +218,51 @@ fn empty_name_triangle() {
     // Verify the indices are loaded properly
     let expect_idx = vec![0, 1, 2];
     assert_eq!(mesh.indices, expect_idx);
+}
+
+#[test]
+fn empty_name_lines() {
+    let m = tobj::load_obj(
+        "obj/unnamed_lines.obj",
+        &tobj::LoadOptions {
+            single_index: true,
+            ..Default::default()
+        },
+    );
+
+    assert!(m.is_ok());
+    let (models, _) = m.unwrap();
+
+    assert_eq!(models.len(), 3);
+
+    // Confirm our triangle is loaded correctly
+    assert_eq!(models[0].name, "unnamed_object_0");
+    // Confirm our triangle is loaded correctly
+    assert_eq!(models[1].name, "group_with_name");
+    // Confirm our triangle is loaded correctly
+    assert_eq!(models[2].name, "unnamed_object_1");
+
+    // now test with provided fallback name
+    let m = tobj::load_obj(
+        "obj/unnamed_lines.obj",
+        &tobj::LoadOptions {
+            single_index: true,
+            unnamed_model_fallback: Some("my_fallback".to_string()),
+            ..Default::default()
+        },
+    );
+
+    assert!(m.is_ok());
+    let (models, _) = m.unwrap();
+
+    assert_eq!(models.len(), 3);
+
+    // Confirm our triangle is loaded correctly
+    assert_eq!(models[0].name, "my_fallback_0");
+    // Confirm our triangle is loaded correctly
+    assert_eq!(models[1].name, "group_with_name");
+    // Confirm our triangle is loaded correctly
+    assert_eq!(models[2].name, "my_fallback_1");
 }
 
 #[test]
