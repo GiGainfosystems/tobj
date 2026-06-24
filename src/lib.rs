@@ -200,7 +200,7 @@
 //! * [`ahash`](https://crates.io/crates/ahash) – On by default. Use [`AHashMap`](https://docs.rs/ahash/latest/ahash/struct.AHashMap.html)
 //!   for hashing when reading files and merging vertices. To disable and use
 //!   the slower [`HashMap`](std::collections::HashMap) instead, unset default
-//! features in `Cargo.toml`:
+//!   features in `Cargo.toml`:
 //!
 //!   ```toml
 //!   [dependencies.tobj]
@@ -276,6 +276,7 @@ pub const GPU_LOAD_OPTIONS: LoadOptions = LoadOptions {
     triangulate: true,
     ignore_points: true,
     ignore_lines: true,
+    unnamed_model_fallback: None,
 };
 
 /// Typical [`LoadOptions`] for using meshes with an offline rendeder.
@@ -293,6 +294,7 @@ pub const OFFLINE_RENDERING_LOAD_OPTIONS: LoadOptions = LoadOptions {
     triangulate: false,
     ignore_points: true,
     ignore_lines: true,
+    unnamed_model_fallback: None,
 };
 
 /// A mesh made up of triangles loaded from some `OBJ` file.
@@ -381,7 +383,7 @@ pub struct Mesh {
     /// each.
     pub indices: Vec<u32>,
     /// The number of vertices (arity) of each face. *Empty* if loaded with
-    /// `triangulate` set to `true` or if the mesh constists *only* of
+    /// `triangulate` set to `true` or if the mesh consists *only* of
     /// triangles.
     ///
     /// The offset for the starting index of a face can be found by iterating
@@ -427,7 +429,7 @@ pub struct Mesh {
 /// * [`OFFLINE_RENDERING_LOAD_OPTIONS`] – if you're rendering meshes with e.g.
 ///   an offline path tracer or the like.
 #[cfg_attr(feature = "arbitrary", derive(arbitrary::Arbitrary))]
-#[derive(Debug, Default, Clone, Copy)]
+#[derive(Debug, Default, Clone)]
 pub struct LoadOptions {
     /// Merge identical positions.
     ///
@@ -506,7 +508,7 @@ pub struct LoadOptions {
     ///   `ignore_lines` is/are set to `true`, resp.
     ///
     /// * The resulting `Mesh`'s [`face_arities`](Mesh::face_arities) will be
-    ///   empty as all faces are guranteed to have arity `3`.
+    ///   empty as all faces are guaranteed to have arity `3`.
     ///
     /// * Only polygons that are trivially convertible to triangle fans are
     ///   supported. Arbitrary polygons may not behave as expected. The best
@@ -529,6 +531,11 @@ pub struct LoadOptions {
     /// Polygon meshes that contains faces with two vertices only usually do so
     /// because of bad topology.
     pub ignore_lines: bool,
+    /// When parsing models, if no name should be provided by an "o" or "g"
+    /// line, this name will be used instead of "unnamed_object".
+    /// Additionally, the unnamed parts will be enumerated like
+    /// "fallback_name_12", starting with 0.
+    pub unnamed_model_fallback: Option<String>,
 }
 
 impl LoadOptions {
@@ -635,6 +642,8 @@ pub enum LoadError {
     ReadError,
     UnrecognizedCharacter,
     PositionParseError,
+    ScalingByZeroError,
+    ColorParseError,
     NormalParseError,
     TexcoordParseError,
     FaceParseError,
@@ -656,6 +665,8 @@ impl fmt::Display for LoadError {
             LoadError::ReadError => "read error",
             LoadError::UnrecognizedCharacter => "unrecognized character",
             LoadError::PositionParseError => "position parse error",
+            LoadError::ScalingByZeroError => "scaling (w) by zero",
+            LoadError::ColorParseError => "color parse error (too many or too few components)",
             LoadError::NormalParseError => "normal parse error",
             LoadError::TexcoordParseError => "texcoord parse error",
             LoadError::FaceParseError => "face parse error",
@@ -677,12 +688,12 @@ impl fmt::Display for LoadError {
 impl Error for LoadError {}
 
 /// A [`Result`] containing all the models loaded from the file and any
-/// materials from referenced material libraries. Or an error that occured while
-/// loading.
+/// materials from referenced material libraries. Or an error that occurred
+/// while loading.
 pub type LoadResult = Result<(Vec<Model>, Result<Vec<Material>, LoadError>), LoadError>;
 
 /// A [`Result`] containing all the materials loaded from the file and a map of
-/// `MTL` name to index. Or an error that occured while loading.
+/// `MTL` name to index. Or an error that occurred while loading.
 pub type MTLLoadResult = Result<(Vec<Material>, HashMap<String, usize>), LoadError>;
 
 /// Struct storing indices corresponding to the vertex.
@@ -768,7 +779,7 @@ fn parse_floatn(val_str: &mut SplitWhitespace, vals: &mut Vec<Float>, n: usize) 
     sz + n == vals.len()
 }
 
-/// Parse the a string into a float3 array, returns an error if parsing failed
+/// Parse a string into a float3 array, returns an error if parsing failed
 fn parse_float3(val_str: SplitWhitespace) -> Result<[Float; 3], LoadError> {
     let arr: [Float; 3] = val_str
         .take(3)
@@ -780,7 +791,7 @@ fn parse_float3(val_str: SplitWhitespace) -> Result<[Float; 3], LoadError> {
     Ok(arr)
 }
 
-/// Parse the a string into a float value, returns an error if parsing failed
+/// Parse a string into a float value, returns an error if parsing failed
 fn parse_float(val_str: Option<&str>) -> Result<Float, LoadError> {
     val_str
         .map(FromStr::from_str)
@@ -794,7 +805,7 @@ fn parse_float(val_str: Option<&str>) -> Result<Float, LoadError> {
 /// Also handles relative face indices (negative values) which is why passing
 /// the number of positions, texcoords and normals is required.
 ///
-/// Returns `false` if an error occured parsing the face.
+/// Returns `false` if an error occurred parsing the face.
 fn parse_face(
     face_str: SplitWhitespace,
     faces: &mut Vec<Face>,
@@ -1498,7 +1509,7 @@ fn reorder_data(mesh: &mut Mesh) {
 /// Merge identical points. A point has dimension N.
 #[cfg(feature = "merging")]
 #[inline]
-fn merge_identical_points<const N: usize>(points: &mut Vec<Float>, indices: &mut Vec<u32>)
+fn merge_identical_points<const N: usize>(points: &mut Vec<Float>, indices: &mut [u32])
 where
     [(); size_of::<[Float; N]>()]:,
 {
@@ -1550,9 +1561,10 @@ struct TmpModels {
     normal: Vec<Float>,
     faces: Vec<Face>,
     // name of the current object being parsed
-    name: String,
+    name: Option<String>,
     // material used by the current object being parsed
     mat_id: Option<usize>,
+    unnamed_model_count: usize,
 }
 
 impl Default for TmpModels {
@@ -1565,8 +1577,9 @@ impl Default for TmpModels {
             texcoord: Vec::new(),
             normal: Vec::new(),
             faces: Vec::new(),
-            name: "unnamed_object".to_owned(),
+            name: None,
             mat_id: None,
+            unnamed_model_count: 0,
         }
     }
 }
@@ -1579,6 +1592,7 @@ impl TmpModels {
 
     #[inline]
     fn pop_model(&mut self, load_options: &LoadOptions) -> Result<(), LoadError> {
+        let model_name = self.get_current_model_name(load_options);
         self.models.push(Model::new(
             if load_options.single_index {
                 export_faces(
@@ -1601,7 +1615,7 @@ impl TmpModels {
                     load_options,
                 )?
             },
-            self.name.clone(),
+            model_name,
         ));
         self.faces.clear();
         Ok(())
@@ -1610,6 +1624,22 @@ impl TmpModels {
     #[inline]
     fn into_models(self) -> Vec<Model> {
         self.models
+    }
+
+    fn get_current_model_name(&mut self, load_options: &LoadOptions) -> String {
+        let model_name = if let Some(name) = &self.name {
+            name.clone()
+        } else {
+            let name = if let Some(ref file_name) = load_options.unnamed_model_fallback {
+                format!("{}_{}", file_name, self.unnamed_model_count)
+            } else {
+                format!("unnamed_object_{}", self.unnamed_model_count)
+            };
+            self.unnamed_model_count += 1;
+            name
+        };
+
+        model_name
     }
 }
 
@@ -1703,12 +1733,51 @@ fn parse_obj_line(
     match words.next() {
         Some("#") | None => Ok(ParseReturnType::None),
         Some("v") => {
+            // we need three floats for the coordinates
             if !parse_floatn(&mut words, &mut models.pos, 3) {
                 return Err(LoadError::PositionParseError);
             }
 
-            // Add inline vertex colors if present.
-            parse_floatn(&mut words, &mut models.v_color, 3);
+            // then it is possible to have either 0, 1, or 3 more float values
+            // 0 -> just coordinates
+            // 1 -> w value that scales x, y, and z parsed before
+            // 3 -> rgb values
+            // w and rgb values should not appear together
+            let Some(first) = words.next() else {
+                return Ok(ParseReturnType::None);
+            };
+
+            match (words.next(), words.next()) {
+                (None, _) => {
+                    let w: Float =
+                        FromStr::from_str(first).map_err(|_| LoadError::PositionParseError)?;
+                    if w == 0.0 {
+                        return Err(LoadError::ScalingByZeroError);
+                    }
+                    // apply this to the latest three coordinates
+                    for coordinate in models.pos.iter_mut().rev().take(3) {
+                        *coordinate /= w;
+                    }
+                }
+                (Some(_), None) => {
+                    // too few values
+                    return Err(LoadError::ColorParseError);
+                }
+                (Some(second), Some(third)) => {
+                    if words.next().is_some() {
+                        // we have too many values
+                        return Err(LoadError::ColorParseError);
+                    }
+
+                    for rgb_component in [first, second, third] {
+                        match FromStr::from_str(rgb_component) {
+                            Ok(x) => models.v_color.push(x),
+                            Err(_) => break,
+                        }
+                    }
+                }
+            }
+
             Ok(ParseReturnType::None)
         }
         Some("vt") => {
@@ -1747,9 +1816,11 @@ fn parse_obj_line(
                 models.pop_model(load_options)?;
             }
             let size = line.chars().next().unwrap().len_utf8();
-            models.name = line[size..].trim().to_owned();
-            if models.name.is_empty() {
-                models.name = "unnamed_object".to_owned();
+            let tmp_name = line[size..].trim().to_owned();
+            if tmp_name.is_empty() {
+                models.name = None;
+            } else {
+                models.name = Some(tmp_name);
             }
             Ok(ParseReturnType::None)
         }
@@ -1773,7 +1844,7 @@ fn parse_obj_line(
                     #[cfg(feature = "log")]
                     log::warn!(
                         "Object {} refers to unfound material: {}",
-                        models.name,
+                        models.get_current_model_name(load_options),
                         mat_name
                     );
                 }
@@ -2041,14 +2112,15 @@ pub fn load_mtl_buf<B: BufRead>(reader: &mut B) -> MTLLoadResult {
 ///
 /// <div class="warning">
 ///
-/// This function is not fully async, as it does not use async reader objects. This means you
-/// must either use a blocking reader object, which negates the point of async in the first place,
-/// or you must asynchronously read the entire buffer into memory, and then give an in-memory reader
+/// This function is not fully async, as it does not use async reader objects.
+/// This means you must either use a blocking reader object, which negates the
+/// point of async in the first place, or you must asynchronously read the
+/// entire buffer into memory, and then give an in-memory reader
 /// to this function, which is wasteful with memory and not terribly efficient.
 ///
-/// Instead, it is recommended to use crate-specific feature flag support to enable support for
-/// various third-party async readers. For example, you can enable the `tokio` feature flag to
-/// use [tokio::load_obj_buf()].
+/// Instead, it is recommended to use crate-specific feature flag support to
+/// enable support for various third-party async readers. For example, you can
+/// enable the `tokio` feature flag to use [tokio::load_obj_buf()].
 ///
 /// </div>
 ///
@@ -2155,13 +2227,13 @@ where
 
 /// Optional module supporting async loading with `futures` traits.
 ///
-/// The functions in this module are drop-in replacements for the standard non-async functions in
-/// this crate, but tailored to use [futures](https://crates.io/crates/futures)
+/// The functions in this module are drop-in replacements for the standard
+/// non-async functions in this crate, but tailored to use [futures](https://crates.io/crates/futures)
 /// [AsyncRead](futures_lite::AsyncRead) traits.
 ///
-/// While `futures` provides basic read/write async traits, it does *not* provide filesystem IO
-/// implementations for these traits, so this module only contains `*_buf()` variants of this
-/// crate's functions.
+/// While `futures` provides basic read/write async traits, it does *not*
+/// provide filesystem IO implementations for these traits, so this module only
+/// contains `*_buf()` variants of this crate's functions.
 #[cfg(feature = "futures")]
 pub mod futures {
     use super::*;
@@ -2170,8 +2242,9 @@ pub mod futures {
 
     /// Asynchronously load the various meshes in an 'OBJ' buffer.
     ///
-    /// This functions exactly like [crate::load_obj_buf()], but uses async read traits and an async
-    /// `material_loader` function. See [crate::load_obj_buf()] for more.
+    /// This functions exactly like [crate::load_obj_buf()], but uses async read
+    /// traits and an async `material_loader` function. See
+    /// [crate::load_obj_buf()] for more.
     ///
     /// This is the [futures](https://crates.io/crates/futures) variant of `load_obj_buf()`; see
     /// [module-level](futures) documentation for more.
@@ -2205,7 +2278,8 @@ pub mod futures {
     ///             _ => unreachable!(),
     ///         }
     ///     },
-    /// ).await;
+    /// )
+    /// .await;
     /// # }
     /// ```
     pub async fn load_obj_buf<B, ML, MLFut>(
@@ -2271,21 +2345,24 @@ pub mod futures {
 
 /// Optional module supporting async loading with `tokio` traits.
 ///
-/// The functions in this module are drop-in replacements for the standard non-async functions in
-/// this crate, but tailored to use [tokio](https://crates.io/crates/tokio)
+/// The functions in this module are drop-in replacements for the standard
+/// non-async functions in this crate, but tailored to use [tokio](https://crates.io/crates/tokio)
 /// [AsyncRead](::tokio::io::AsyncRead) traits.
 #[cfg(feature = "tokio")]
 pub mod tokio {
     use super::*;
 
-    use ::tokio::fs::File;
-    use ::tokio::io::{AsyncBufRead, AsyncBufReadExt, BufReader};
-    use ::tokio::pin;
+    use ::tokio::{
+        fs::File,
+        io::{AsyncBufRead, AsyncBufReadExt, BufReader},
+        pin,
+    };
 
-    /// Load the various objects specified in the `OBJ` file and any associated `MTL` file.
+    /// Load the various objects specified in the `OBJ` file and any associated
+    /// `MTL` file.
     ///
-    /// This functions exactly like [crate::load_obj()] but uses async filesystem logic. See
-    /// [crate::load_obj()] for more.
+    /// This functions exactly like [crate::load_obj()] but uses async
+    /// filesystem logic. See [crate::load_obj()] for more.
     ///
     /// This is the [tokio](https://crates.io/crates/tokio) variant of `load_obj()`; see
     /// [module-level](tokio) documentation for more.
@@ -2302,7 +2379,8 @@ pub mod tokio {
             }
         };
         load_obj_buf(BufReader::new(file), load_options, |mat_path| {
-            // This needs to be "copied" into this closure before moving it into the async one below
+            // This needs to be "copied" into this closure before moving it into the async
+            // one below
             let file_name: &Path = file_name.as_ref();
             let file_name = file_name.to_path_buf();
             async move {
@@ -2320,8 +2398,8 @@ pub mod tokio {
 
     /// Load the materials defined in a `MTL` file.
     ///
-    /// This functions exactly like [crate::load_mtl()] but uses async filesystem logic. See
-    /// [crate::load_mtl()] for more.
+    /// This functions exactly like [crate::load_mtl()] but uses async
+    /// filesystem logic. See [crate::load_mtl()] for more.
     ///
     /// This is the [tokio](https://crates.io/crates/tokio) variant of `load_mtl()`; see
     /// [module-level](tokio) documentation for more.
@@ -2342,8 +2420,9 @@ pub mod tokio {
 
     /// Asynchronously load the various meshes in an 'OBJ' buffer.
     ///
-    /// This functions exactly like [crate::load_obj_buf()], but uses async read traits and an async
-    /// `material_loader` function. See [crate::load_obj_buf()] for more.
+    /// This functions exactly like [crate::load_obj_buf()], but uses async read
+    /// traits and an async `material_loader` function. See
+    /// [crate::load_obj_buf()] for more.
     ///
     /// This is the [tokio](https://crates.io/crates/tokio) variant of `load_obj_buf()`; see
     /// [module-level](tokio) documentation for more.

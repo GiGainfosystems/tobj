@@ -49,6 +49,63 @@ fn simple_triangle() {
 }
 
 #[test]
+fn simple_triangle_scaled() {
+    let m = tobj::load_obj(
+        "obj/triangle_scaled.obj",
+        &tobj::LoadOptions {
+            single_index: true,
+            ..Default::default()
+        },
+    );
+    assert!(m.is_ok());
+    let (models, mats) = m.unwrap();
+    let mats = mats.unwrap();
+    // We expect a single model with no materials
+    assert_eq!(models.len(), 1);
+    assert!(mats.is_empty());
+    // Confirm our triangle is loaded correctly
+    assert_eq!(models[0].name, "Triangle");
+    let mesh = &models[0].mesh;
+    assert!(mesh.normals.is_empty());
+    assert!(mesh.texcoords.is_empty());
+    assert_eq!(mesh.material_id, None);
+
+    // Verify each position is loaded properly
+    let expect_pos = vec![0.0, 0.0, 0.0, 2.0, 0.0, 0.0, 0.0, 2.0, 0.0];
+    assert_float_eq!(mesh.positions, expect_pos, r2nd_all <= TOL);
+    // Verify the indices are loaded properly
+    let expect_idx = vec![0, 1, 2];
+    assert_eq!(mesh.indices, expect_idx);
+
+    // Verify that there are no vertex colors
+    assert!(mesh.vertex_color.is_empty());
+}
+
+#[test]
+fn simple_triangle_scaled_by_zeor() {
+    let m = tobj::load_obj(
+        "obj/triangle_scaled_by_zero.obj",
+        &tobj::LoadOptions {
+            single_index: true,
+            ..Default::default()
+        },
+    );
+    assert!(m.is_err());
+}
+
+#[test]
+fn triangle_with_two_floats() {
+    let m = tobj::load_obj(
+        "obj/triangle_with_two_additional_floats.obj",
+        &tobj::LoadOptions {
+            single_index: true,
+            ..Default::default()
+        },
+    );
+    assert!(m.is_err());
+}
+
+#[test]
 fn simple_triangle_colored() {
     let m = tobj::load_obj(
         "obj/triangle_colored.obj",
@@ -149,7 +206,7 @@ fn empty_name_triangle() {
     assert_eq!(models.len(), 1);
     assert!(mats.is_empty());
     // Confirm our triangle is loaded correctly
-    assert_eq!(models[0].name, "unnamed_object");
+    assert_eq!(models[0].name, "unnamed_object_0");
     let mesh = &models[0].mesh;
     assert!(mesh.normals.is_empty());
     assert!(mesh.texcoords.is_empty());
@@ -161,6 +218,51 @@ fn empty_name_triangle() {
     // Verify the indices are loaded properly
     let expect_idx = vec![0, 1, 2];
     assert_eq!(mesh.indices, expect_idx);
+}
+
+#[test]
+fn empty_name_lines() {
+    let m = tobj::load_obj(
+        "obj/unnamed_lines.obj",
+        &tobj::LoadOptions {
+            single_index: true,
+            ..Default::default()
+        },
+    );
+
+    assert!(m.is_ok());
+    let (models, _) = m.unwrap();
+
+    assert_eq!(models.len(), 3);
+
+    // Confirm our triangle is loaded correctly
+    assert_eq!(models[0].name, "unnamed_object_0");
+    // Confirm our triangle is loaded correctly
+    assert_eq!(models[1].name, "group_with_name");
+    // Confirm our triangle is loaded correctly
+    assert_eq!(models[2].name, "unnamed_object_1");
+
+    // now test with provided fallback name
+    let m = tobj::load_obj(
+        "obj/unnamed_lines.obj",
+        &tobj::LoadOptions {
+            single_index: true,
+            unnamed_model_fallback: Some("my_fallback".to_string()),
+            ..Default::default()
+        },
+    );
+
+    assert!(m.is_ok());
+    let (models, _) = m.unwrap();
+
+    assert_eq!(models.len(), 3);
+
+    // Confirm our triangle is loaded correctly
+    assert_eq!(models[0].name, "my_fallback_0");
+    // Confirm our triangle is loaded correctly
+    assert_eq!(models[1].name, "group_with_name");
+    // Confirm our triangle is loaded correctly
+    assert_eq!(models[2].name, "my_fallback_1");
 }
 
 #[test]
@@ -209,7 +311,7 @@ fn non_triangulated_quad() {
     assert!(mats.is_empty());
 
     // First one is a quad formed by two triangles
-    // so face_arities is empty (all trinagles)
+    // so face_arities is empty (all triangles)
     assert!(models[0].mesh.face_arities.is_empty());
 
     // Second is a quad face
@@ -438,7 +540,7 @@ fn validate_cornell(models: Vec<tobj::Model>, mats: Vec<tobj::Material>) {
     assert_eq!(mat.unknown_param.len(), 1);
     assert_eq!(
         mat.unknown_param.get("crazy_unknown"),
-        Some(&"Wierd stuff here".to_string())
+        Some(&"Weird stuff here".to_string())
     );
 
     // Verify light material loaded properly
@@ -536,8 +638,7 @@ fn test_async_custom_material_loader() {
 mod futures {
     use super::*;
     use crate::futures::{load_mtl_buf, load_obj_buf};
-    use futures_lite::future;
-    use futures_lite::io::BufReader;
+    use futures_lite::{future, io::BufReader};
 
     #[test]
     fn test_custom_material_loader() {
